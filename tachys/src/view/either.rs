@@ -126,6 +126,20 @@ const fn max_usize(vals: &[usize]) -> usize {
     max
 }
 
+#[cfg(feature = "mark_branches")]
+fn server_branch_mismatch(
+    cursor: &Cursor,
+    position: &PositionState,
+    expected: &str,
+    from_server: bool,
+    candidates: &[&str],
+) -> bool {
+    from_server
+        && cursor
+            .next_branch_marker_matching(position, candidates)
+            .is_some_and(|marker| marker.id() != expected)
+}
+
 #[cfg(not(erase_components))]
 impl<A, B> NextAttribute for Either<A, B>
 where
@@ -411,11 +425,61 @@ where
         cursor: &Cursor,
         position: &PositionState,
     ) -> Self::State {
+        #[cfg(target_arch = "wasm32")]
+        web_sys::console::warn_1(
+            &format!(
+                "[hydra-trace] Either::hydrate<FROM_SERVER={}> variant={} \
+                 A={} B={}",
+                FROM_SERVER,
+                if matches!(self, Either::Left(_)) {
+                    "Left"
+                } else {
+                    "Right"
+                },
+                std::any::type_name::<A>(),
+                std::any::type_name::<B>()
+            )
+            .into(),
+        );
         match self {
             Either::Left(left) => {
+                #[cfg(feature = "mark_branches")]
+                if server_branch_mismatch(
+                    cursor,
+                    position,
+                    "0",
+                    FROM_SERVER,
+                    &["0", "1"],
+                ) {
+                    let mut state = left.build();
+                    cursor.replace_next_branch(
+                        position,
+                        &["0", "1"],
+                        &mut state,
+                    );
+                    return Either::Left(state);
+                }
+
                 Either::Left(left.hydrate::<FROM_SERVER>(cursor, position))
             }
             Either::Right(right) => {
+                #[cfg(feature = "mark_branches")]
+                if server_branch_mismatch(
+                    cursor,
+                    position,
+                    "1",
+                    FROM_SERVER,
+                    &["0", "1"],
+                ) {
+                    let mut state = right.build();
+                    cursor.replace_next_branch(
+                        position,
+                        &["0", "1"],
+                        &mut state,
+                    );
+                    return Either::Right(state);
+                }
+
                 Either::Right(right.hydrate::<FROM_SERVER>(cursor, position))
             }
         }
@@ -426,11 +490,59 @@ where
         cursor: &Cursor,
         position: &PositionState,
     ) -> Self::State {
+        #[cfg(target_arch = "wasm32")]
+        web_sys::console::warn_1(
+            &format!(
+                "[hydra-trace] Either::hydrate_async variant={} A={} B={}",
+                if matches!(self, Either::Left(_)) {
+                    "Left"
+                } else {
+                    "Right"
+                },
+                std::any::type_name::<A>(),
+                std::any::type_name::<B>()
+            )
+            .into(),
+        );
         match self {
             Either::Left(left) => {
+                #[cfg(feature = "mark_branches")]
+                if server_branch_mismatch(
+                    cursor,
+                    position,
+                    "0",
+                    true,
+                    &["0", "1"],
+                ) {
+                    let mut state = left.build();
+                    cursor.replace_next_branch(
+                        position,
+                        &["0", "1"],
+                        &mut state,
+                    );
+                    return Either::Left(state);
+                }
+
                 Either::Left(left.hydrate_async(cursor, position).await)
             }
             Either::Right(right) => {
+                #[cfg(feature = "mark_branches")]
+                if server_branch_mismatch(
+                    cursor,
+                    position,
+                    "1",
+                    true,
+                    &["0", "1"],
+                ) {
+                    let mut state = right.build();
+                    cursor.replace_next_branch(
+                        position,
+                        &["0", "1"],
+                        &mut state,
+                    );
+                    return Either::Right(state);
+                }
+
                 Either::Right(right.hydrate_async(cursor, position).await)
             }
         }
@@ -649,6 +761,18 @@ where
         position: &PositionState,
     ) -> Self::State {
         let showing_b = self.show_b;
+        #[cfg(target_arch = "wasm32")]
+        web_sys::console::warn_1(
+            &format!(
+                "[hydra-trace] EitherKeepAlive::hydrate<FROM_SERVER={}> \
+                 show_b={} A={} B={}",
+                FROM_SERVER,
+                showing_b,
+                std::any::type_name::<A>(),
+                std::any::type_name::<B>()
+            )
+            .into(),
+        );
         let a = self.a.map(|a| {
             if showing_b {
                 a.build()
@@ -673,6 +797,17 @@ where
         position: &PositionState,
     ) -> Self::State {
         let showing_b = self.show_b;
+        #[cfg(target_arch = "wasm32")]
+        web_sys::console::warn_1(
+            &format!(
+                "[hydra-trace] EitherKeepAlive::hydrate_async show_b={} A={} \
+                 B={}",
+                showing_b,
+                std::any::type_name::<A>(),
+                std::any::type_name::<B>()
+            )
+            .into(),
+        );
         let a = if let Some(a) = self.a {
             Some(if showing_b {
                 a.build()
@@ -959,8 +1094,37 @@ macro_rules! tuples {
                     cursor: &Cursor,
                     position: &PositionState,
                 ) -> Self::State {
+                    #[allow(unused_variables)]
+                    let variant = match &self {
+                        $([<EitherOf $num>]::$ty(_) => stringify!($ty),)*
+                    };
+                    #[cfg(target_arch = "wasm32")]
+                    web_sys::console::warn_1(
+                        &format!(
+                            "[hydra-trace] EitherOf{}::hydrate<FROM_SERVER={}> variant={}",
+                            $num, FROM_SERVER, variant
+                        )
+                        .into(),
+                    );
+                    #[cfg(feature = "mark_branches")]
+                    let candidates = &[$(stringify!($ty),)*];
                     let state = match self {
                         $([<EitherOf $num>]::$ty(this) => {
+                            #[cfg(feature = "mark_branches")]
+                            if server_branch_mismatch(
+                                cursor,
+                                position,
+                                stringify!($ty),
+                                FROM_SERVER,
+                                candidates,
+                            ) {
+                                let mut state = this.build();
+                                cursor.replace_next_branch(position, candidates, &mut state);
+                                return Self::State {
+                                    state: [<EitherOf $num>]::$ty(state),
+                                };
+                            }
+
                             [<EitherOf $num>]::$ty(this.hydrate::<FROM_SERVER>(cursor, position))
                         })*
                     };
@@ -973,8 +1137,37 @@ macro_rules! tuples {
                     cursor: &Cursor,
                     position: &PositionState,
                 ) -> Self::State {
+                    #[allow(unused_variables)]
+                    let variant = match &self {
+                        $([<EitherOf $num>]::$ty(_) => stringify!($ty),)*
+                    };
+                    #[cfg(target_arch = "wasm32")]
+                    web_sys::console::warn_1(
+                        &format!(
+                            "[hydra-trace] EitherOf{}::hydrate_async variant={}",
+                            $num, variant
+                        )
+                        .into(),
+                    );
+                    #[cfg(feature = "mark_branches")]
+                    let candidates = &[$(stringify!($ty),)*];
                     let state = match self {
                         $([<EitherOf $num>]::$ty(this) => {
+                            #[cfg(feature = "mark_branches")]
+                            if server_branch_mismatch(
+                                cursor,
+                                position,
+                                stringify!($ty),
+                                true,
+                                candidates,
+                            ) {
+                                let mut state = this.build();
+                                cursor.replace_next_branch(position, candidates, &mut state);
+                                return Self::State {
+                                    state: [<EitherOf $num>]::$ty(state),
+                                };
+                            }
+
                             [<EitherOf $num>]::$ty(this.hydrate_async(cursor, position).await)
                         })*
                     };

@@ -75,6 +75,7 @@ hydrate = [
   "leptos_macro/hydrate",
   "hydration",
   "tachys/hydrate",
+  "tachys/mark_branches",
   "reactive_graph/effects",
   "getrandom?/wasm_js",
 ]
@@ -86,6 +87,7 @@ ssr = [
   "server_fn/ssr",
   "hydration",
   "tachys/ssr",
+  "tachys/mark_branches",
 ]
 nightly = ["leptos_macro/nightly", "reactive_graph/nightly", "tachys/nightly"]
 rkyv = ["server_fn/rkyv", "leptos_server/rkyv"]

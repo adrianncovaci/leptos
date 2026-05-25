@@ -225,7 +225,7 @@ where
             &mut builder,
             &mut Position::FirstChild,
             true,
-            false,
+            cfg!(feature = "mark_branches"),
             vec![],
         );
         builder.finish()

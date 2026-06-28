@@ -142,6 +142,8 @@ mod navigate;
 pub mod nested_router;
 /// Support for maps of parameters in the path or in the query.
 pub mod params;
+/// Speculative prefetching of the code for lazy routes.
+pub mod preload;
 mod ssr_mode;
 /// Support for static routing.
 pub mod static_routes;
@@ -152,6 +154,7 @@ pub use leptos_router_macro::{lazy_route, path};
 pub use matching::*;
 pub use method::*;
 pub use navigate::*;
+pub use preload::use_preloader;
 pub use ssr_mode::*;
 
 pub(crate) mod view_transition {

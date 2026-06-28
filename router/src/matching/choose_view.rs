@@ -10,6 +10,15 @@ where
     fn choose(self) -> impl Future<Output = AnyView>;
 
     fn preload(&self) -> impl Future<Output = ()>;
+
+    /// Warm **only** this view's code (its lazy WASM chunk) for speculative
+    /// prefetch, WITHOUT constructing route data — i.e. without running
+    /// [`LazyRoute::data`] or the server functions it may start. Contrast with
+    /// [`ChooseView::preload`], which also primes `data` for an imminent
+    /// navigation. Defaults to a no-op for views with no lazy code to fetch.
+    fn preload_code(&self) -> impl Future<Output = ()> {
+        async {}
+    }
 }
 
 impl<F, View> ChooseView for F
@@ -35,6 +44,14 @@ where
 
     async fn preload(&self) {
         *self.data.write_value() = Some(T::data());
+        T::preload().await;
+    }
+
+    async fn preload_code(&self) {
+        // Code-only warm: fetch + compile this route's lazy chunk closure (and
+        // memoize it in the loader), but do NOT prime `data` via `T::data()` —
+        // that would run the route's Resources / server functions for a route
+        // the user may never visit. The eventual real navigation runs `data()`.
         T::preload().await;
     }
 }
@@ -105,6 +122,13 @@ where
             Either::Right(f) => f.preload().await,
         }
     }
+
+    async fn preload_code(&self) {
+        match self {
+            Either::Left(f) => f.preload_code().await,
+            Either::Right(f) => f.preload_code().await,
+        }
+    }
 }
 
 macro_rules! tuples {
@@ -124,6 +148,12 @@ macro_rules! tuples {
             async fn preload(&self) {
                 match self {
                     $($either::$ty(f) => f.preload().await,)*
+                }
+            }
+
+            async fn preload_code(&self) {
+                match self {
+                    $($either::$ty(f) => f.preload_code().await,)*
                 }
             }
         }

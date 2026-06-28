@@ -113,6 +113,7 @@ where
         query_mutations: Default::default(),
         location_provider,
     });
+    crate::preload::provide_route_preload_queue();
 
     let children = children.into_inner();
     children()
@@ -248,6 +249,8 @@ where
         children.into_inner(),
         base.clone().unwrap_or_default(),
     );
+    #[cfg(not(feature = "ssr"))]
+    crate::preload::setup_route_preloading(routes.clone());
     let outer_owner =
         Owner::current().expect("creating Routes, but no Owner was found");
     move || {
@@ -304,6 +307,8 @@ where
         children.into_inner(),
         base.clone().unwrap_or_default(),
     );
+    #[cfg(not(feature = "ssr"))]
+    crate::preload::setup_route_preloading(routes.clone());
 
     let outer_owner =
         Owner::current().expect("creating Router, but no Owner was found");

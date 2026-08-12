@@ -130,7 +130,7 @@ pub mod suspense {
         /// Send the notification. If the inner channel has already been used, this does nothing.
         pub fn notify(&mut self) {
             if let Some(tx) = self.0.lock().or_poisoned().take() {
-                tx.send(()).unwrap();
+                _ = tx.send(());
             }
         }
     }
@@ -138,6 +138,20 @@ pub mod suspense {
     impl From<Sender<()>> for LocalResourceNotifier {
         fn from(value: Sender<()>) -> Self {
             Self(Arc::new(Mutex::new(Some(value))))
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::LocalResourceNotifier;
+        use futures::channel::oneshot;
+
+        #[test]
+        fn notifying_after_receiver_is_dropped_does_not_panic() {
+            let (sender, receiver) = oneshot::channel();
+            drop(receiver);
+
+            LocalResourceNotifier::from(sender).notify();
         }
     }
 

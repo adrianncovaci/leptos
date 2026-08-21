@@ -352,6 +352,15 @@ where
         let eff = reactive_graph::effect::Effect::new_isomorphic({
             let children = Arc::clone(&children);
             let notify_error_boundary = notify_error_boundary.clone();
+            // One-shot guard for the double-check walk below. The eager walk
+            // before this effect, plus exactly one walk from inside it, is
+            // enough to discover resources nested behind an initial resource
+            // read. Walking again on every later empty-task observation
+            // re-invokes the child closures, and a closure that *creates*
+            // resources registers a fresh set of tasks each time, so the task
+            // set never stays empty on the run that carries `Some(true)` and
+            // the terminal branch is never reached.
+            let mut did_double_check = false;
             move |double_checking: Option<bool>| {
                 // Subscribe to `tasks` before reading on every run, unless the notification
                 // has already been sent via `tasks_tx`
@@ -379,7 +388,7 @@ where
 
                 if let Some(curr_tasks) = curr_tasks {
                     if curr_tasks.is_empty() {
-                        if double_checking == Some(true) {
+                        if double_checking == Some(true) || did_double_check {
                             // we have finished loading, and checking the children again told us there are
                             // no more pending tasks. so we can render both the children and the error boundary
 
@@ -394,6 +403,8 @@ where
                                 _ = tx.send(());
                             }
                         } else {
+                            // only ever walk the children once (see `did_double_check`)
+                            did_double_check = true;
                             // release the read guard on tasks, as we'll be updating it again
                             drop(curr_tasks);
                             // check the children for additional pending tasks

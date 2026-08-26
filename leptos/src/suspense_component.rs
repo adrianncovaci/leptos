@@ -352,6 +352,14 @@ where
         let eff = reactive_graph::effect::Effect::new_isomorphic({
             let children = Arc::clone(&children);
             let notify_error_boundary = notify_error_boundary.clone();
+            // One-shot guard: the eager walk above + exactly one double-check
+            // walk is enough to discover one level of conditionally-nested
+            // resources. Re-walking on every empty-tasks observation re-runs
+            // the reactive child closures, which re-creates nested resources
+            // and re-registers new SuspenseContext tasks, so the task set
+            // never settles and this effect loops forever (it never reaches
+            // the terminal branch, which requires an empty task set).
+            let mut did_double_check = false;
             move |double_checking: Option<bool>| {
                 // Subscribe to `tasks` before reading on every run, unless the notification
                 // has already been sent via `tasks_tx`
@@ -379,7 +387,7 @@ where
 
                 if let Some(curr_tasks) = curr_tasks {
                     if curr_tasks.is_empty() {
-                        if double_checking == Some(true) {
+                        if double_checking == Some(true) || did_double_check {
                             // we have finished loading, and checking the children again told us there are
                             // no more pending tasks. so we can render both the children and the error boundary
 
@@ -394,6 +402,9 @@ where
                                 _ = tx.send(());
                             }
                         } else {
+                            // only ever walk the children once (see
+                            // `did_double_check` above)
+                            did_double_check = true;
                             // release the read guard on tasks, as we'll be updating it again
                             drop(curr_tasks);
                             // check the children for additional pending tasks

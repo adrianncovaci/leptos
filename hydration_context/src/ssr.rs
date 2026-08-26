@@ -97,14 +97,16 @@ impl SharedContext for SsrSharedContext {
         false
     }
 
-    #[track_caller]
     fn next_id(&self) -> SerializedDataId {
+        if let Some(id) = crate::scoped_next_id() {
+            return id;
+        }
         let id = if self.get_is_hydrating() {
             self.id.fetch_add(1, Ordering::Relaxed)
         } else {
             self.non_hydration_id.fetch_sub(1, Ordering::Relaxed)
         };
-        SerializedDataId(id)
+        SerializedDataId::new(id)
     }
 
     fn write_async(&self, id: SerializedDataId, fut: PinnedFuture<String>) {
@@ -173,12 +175,10 @@ impl SharedContext for SsrSharedContext {
         // 1) initial, synchronous setup chunk
         let mut initial_chunk = String::new();
         // resolved synchronous resources and errors
-        initial_chunk.push_str("__RESOLVED_RESOURCES=[");
+        initial_chunk.push_str("__RESOLVED_RESOURCES={};");
         for resolved in sync_data {
             resolved.write_to_buf(&mut initial_chunk);
-            initial_chunk.push(',');
         }
-        initial_chunk.push_str("];");
 
         initial_chunk.push_str("__SERIALIZED_ERRORS=[");
         for error in mem::take(&mut *self.errors.write().or_poisoned()) {
@@ -192,8 +192,10 @@ impl SharedContext for SsrSharedContext {
                 format!("{:?}", error.2.to_string()).replace('<', "\\u003c");
             _ = write!(
                 initial_chunk,
-                "[{}, {}, {}],",
-                error.0 .0, error.1, msg
+                "[{:?}, {}, {}],",
+                error.0.as_key(),
+                error.1,
+                msg
             );
         }
         initial_chunk.push_str("];");
@@ -201,7 +203,7 @@ impl SharedContext for SsrSharedContext {
         // pending async resources
         initial_chunk.push_str("__PENDING_RESOURCES=[");
         for (id, _) in async_data.iter() {
-            _ = write!(&mut initial_chunk, "{},", id.0);
+            _ = write!(&mut initial_chunk, "{:?},", id.as_key());
         }
         initial_chunk.push_str("];");
 
@@ -222,7 +224,7 @@ impl SharedContext for SsrSharedContext {
                 let mut script = String::new();
                 script.push_str("__INCOMPLETE_CHUNKS=[");
                 for chunk in mem::take(&mut *incomplete.lock().or_poisoned()) {
-                    _ = write!(script, "{},", chunk.0);
+                    _ = write!(script, "{:?},", chunk.as_key());
                 }
                 script.push_str("];");
                 script
@@ -290,8 +292,9 @@ impl Stream for AsyncDataStream {
                     let data = data.replace('<', "\\u003c");
                     _ = write!(
                         resolved,
-                        "__RESOLVED_RESOURCES[{}] = {:?};",
-                        id.0, data
+                        "__RESOLVED_RESOURCES[{:?}] = {:?};",
+                        id.as_key(),
+                        data
                     );
                 }
             }
@@ -305,8 +308,10 @@ impl Stream for AsyncDataStream {
                     .replace('<', "\\u003c");
                 _ = write!(
                     resolved,
-                    "__SERIALIZED_ERRORS.push([{}, {}, {}]);",
-                    error.0 .0, error.1, msg
+                    "__SERIALIZED_ERRORS.push([{:?}, {}, {}]);",
+                    error.0.as_key(),
+                    error.1,
+                    msg
                 );
             }
         }
@@ -330,7 +335,8 @@ impl ResolvedData {
         let ResolvedData(id, ser) = self;
         // escapes < to prevent it being interpreted as another opening HTML tag
         let ser = ser.replace('<', "\\u003c");
-        write!(buf, "{}: {:?}", id.0, ser).unwrap();
+        write!(buf, "__RESOLVED_RESOURCES[{:?}] = {:?};", id.as_key(), ser)
+            .unwrap();
     }
 }
 
@@ -357,7 +363,7 @@ mod tests {
     fn error_in_initial_chunk_escapes_script_close_tag() {
         let ctx = SsrSharedContext::new();
         ctx.register_error(
-            SerializedDataId(0),
+            SerializedDataId::new(0),
             ErrorId::from(0_usize),
             Error::from(CustomError(
                 "boom</script><script>alert('pwned')</script><script>",
@@ -393,7 +399,7 @@ mod tests {
 
         // park one async resource so AsyncDataStream emits a follow-up chunk
         ctx.write_async(
-            SerializedDataId(1),
+            SerializedDataId::new(1),
             Box::pin(async { String::from("\"ok\"") }),
         );
 
@@ -404,7 +410,7 @@ mod tests {
         // register an error after pending_data() has been called so it is
         // serialized through the streaming path rather than the initial chunk
         ctx.register_error(
-            SerializedDataId(2),
+            SerializedDataId::new(2),
             ErrorId::from(7_usize),
             Error::from(CustomError("late</script><script>x</script>")),
         );

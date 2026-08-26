@@ -20,7 +20,7 @@ use wasm_bindgen::{prelude::wasm_bindgen, JsCast};
 #[wasm_bindgen]
 extern "C" {
     #[wasm_bindgen(thread_local)]
-    static __RESOLVED_RESOURCES: Array;
+    static __RESOLVED_RESOURCES: js_sys::Object;
 
     #[wasm_bindgen(thread_local)]
     static __SERIALIZED_ERRORS: Array;
@@ -34,15 +34,17 @@ fn serialized_errors() -> Vec<(SerializedDataId, ErrorId, Error)> {
         s.iter()
             .flat_map(|value| {
                 value.dyn_ref::<Array>().map(|value| {
-                    let error_boundary_id =
-                        value.get(0).as_f64().unwrap() as usize;
+                    let error_boundary_id = value
+                        .get(0)
+                        .as_string()
+                        .expect("Expected a [string, number, string] tuple");
                     let error_id = value.get(1).as_f64().unwrap() as usize;
                     let value = value
                         .get(2)
                         .as_string()
-                        .expect("Expected a [number, string] tuple");
+                        .expect("Expected a [string, number, string] tuple");
                     (
-                        SerializedDataId(error_boundary_id),
+                        SerializedDataId::from_key(error_boundary_id),
                         ErrorId::from(error_id),
                         Error::from(SerializedError(value)),
                     )
@@ -56,8 +58,8 @@ fn incomplete_chunks() -> Vec<SerializedDataId> {
     __INCOMPLETE_CHUNKS.with(|i| {
         i.iter()
             .map(|value| {
-                let id = value.as_f64().unwrap() as usize;
-                SerializedDataId(id)
+                let id = value.as_string().unwrap();
+                SerializedDataId::from_key(id)
             })
             .collect()
     })
@@ -124,14 +126,21 @@ impl SharedContext for HydrateSharedContext {
     }
 
     fn next_id(&self) -> SerializedDataId {
+        if let Some(id) = crate::scoped_next_id() {
+            return id;
+        }
         let id = self.id.fetch_add(1, Ordering::Relaxed);
-        SerializedDataId(id)
+        SerializedDataId::browser_local(id)
     }
 
     fn write_async(&self, _id: SerializedDataId, _fut: PinnedFuture<String>) {}
 
     fn read_data(&self, id: &SerializedDataId) -> Option<String> {
-        __RESOLVED_RESOURCES.with(|r| r.get(id.0 as u32).as_string())
+        __RESOLVED_RESOURCES.with(|r| {
+            js_sys::Reflect::get(r, &wasm_bindgen::JsValue::from_str(id.as_key()))
+                .ok()
+                .and_then(|value| value.as_string())
+        })
     }
 
     fn await_data(&self, _id: &SerializedDataId) -> Option<String> {

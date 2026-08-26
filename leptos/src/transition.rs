@@ -128,10 +128,12 @@ where
         }
 
         OwnedView::new(SuspenseBoundary::<true, _, _> {
-            id,
+            id: id.clone(),
             none_pending,
             fallback,
-            children,
+            children: crate::suspense_component::IdScopedView::new(
+                id, children,
+            ),
             error_boundary_parent,
             has_tasks,
         })

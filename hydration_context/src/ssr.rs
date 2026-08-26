@@ -121,14 +121,16 @@ impl SharedContext for SsrSharedContext {
         false
     }
 
-    #[track_caller]
     fn next_id(&self) -> SerializedDataId {
+        if let Some(id) = crate::scoped_next_id() {
+            return id;
+        }
         let id = if self.get_is_hydrating() {
             self.id.fetch_add(1, Ordering::Relaxed)
         } else {
             self.non_hydration_id.fetch_sub(1, Ordering::Relaxed)
         };
-        SerializedDataId(id)
+        SerializedDataId::new(id)
     }
 
     fn write_async(&self, id: SerializedDataId, fut: PinnedFuture<String>) {
@@ -223,12 +225,10 @@ impl SharedContext for SsrSharedContext {
         // 1) initial, synchronous setup chunk
         let mut initial_chunk = String::new();
         // resolved synchronous resources and errors
-        initial_chunk.push_str("__RESOLVED_RESOURCES=[");
+        initial_chunk.push_str("__RESOLVED_RESOURCES={};");
         for resolved in sync_data {
             resolved.write_to_buf(&mut initial_chunk);
-            initial_chunk.push(',');
         }
-        initial_chunk.push_str("];");
 
         initial_chunk.push_str("__SERIALIZED_ERRORS=[");
         for error in mem::take(&mut *self.errors.write().or_poisoned()) {
@@ -240,14 +240,20 @@ impl SharedContext for SsrSharedContext {
             // still decodes `<` straight back to `<` for the consumer.
             let formatted = format!("{:?}", error.2.to_string());
             let msg = escape_lt(&formatted);
-            _ = write!(initial_chunk, "[{}, {}, {}],", error.0.0, error.1, msg);
+            _ = write!(
+                initial_chunk,
+                "[{:?}, {}, {}],",
+                error.0.as_key(),
+                error.1,
+                msg
+            );
         }
         initial_chunk.push_str("];");
 
         // pending async resources known at snapshot time
         initial_chunk.push_str("__PENDING_RESOURCES=[");
         for id in &initial_pending_ids {
-            _ = write!(&mut initial_chunk, "{},", id.0);
+            _ = write!(&mut initial_chunk, "{:?},", id.as_key());
         }
         initial_chunk.push_str("];");
 
@@ -258,7 +264,7 @@ impl SharedContext for SsrSharedContext {
         // fallback-state chunks as complete.
         initial_chunk.push_str("__INCOMPLETE_CHUNKS=[");
         for id in &initial_incomplete {
-            _ = write!(&mut initial_chunk, "{},", id.0);
+            _ = write!(&mut initial_chunk, "{:?},", id.as_key());
         }
         initial_chunk.push_str("];");
 
@@ -294,8 +300,8 @@ impl SharedContext for SsrSharedContext {
                 for entry in lock.iter().skip(from) {
                     _ = write!(
                         script,
-                        "__INCOMPLETE_CHUNKS.push({});",
-                        entry.0
+                        "__INCOMPLETE_CHUNKS.push({:?});",
+                        entry.as_key()
                     );
                 }
                 script
@@ -423,13 +429,18 @@ impl Stream for AsyncDataStream {
                 // `__RESOLVED_RESOURCES[id] = ...` for an id that never appeared
                 // in `__PENDING_RESOURCES`.
                 if !this.initial_pending_ids.contains(&id) {
-                    _ = write!(resolved, "__PENDING_RESOURCES.push({});", id.0);
+                    _ = write!(
+                        resolved,
+                        "__PENDING_RESOURCES.push({:?});",
+                        id.as_key()
+                    );
                 }
                 let data = escape_lt(&data);
                 _ = write!(
                     resolved,
-                    "__RESOLVED_RESOURCES[{}] = {:?};",
-                    id.0, data
+                    "__RESOLVED_RESOURCES[{:?}] = {:?};",
+                    id.as_key(),
+                    data
                 );
             }
 
@@ -452,7 +463,11 @@ impl Stream for AsyncDataStream {
             let lock = this.incomplete.lock().or_poisoned();
             let from = this.incomplete_emitted.load(Ordering::Relaxed);
             for entry in lock.iter().skip(from) {
-                _ = write!(resolved, "__INCOMPLETE_CHUNKS.push({});", entry.0);
+                _ = write!(
+                    resolved,
+                    "__INCOMPLETE_CHUNKS.push({:?});",
+                    entry.as_key()
+                );
             }
             this.incomplete_emitted.store(lock.len(), Ordering::Relaxed);
         }
@@ -466,8 +481,10 @@ impl Stream for AsyncDataStream {
                 let msg = escape_lt(&formatted);
                 _ = write!(
                     resolved,
-                    "__SERIALIZED_ERRORS.push([{}, {}, {}]);",
-                    error.0.0, error.1, msg
+                    "__SERIALIZED_ERRORS.push([{:?}, {}, {}]);",
+                    error.0.as_key(),
+                    error.1,
+                    msg
                 );
             }
         }
@@ -514,7 +531,8 @@ impl ResolvedData {
         let ResolvedData(id, ser) = self;
         // escapes < to prevent it being interpreted as another opening HTML tag
         let ser = escape_lt(ser);
-        write!(buf, "{}: {:?}", id.0, ser).unwrap();
+        write!(buf, "__RESOLVED_RESOURCES[{:?}] = {:?};", id.as_key(), ser)
+            .unwrap();
     }
 }
 
@@ -541,7 +559,7 @@ mod tests {
     fn error_in_initial_chunk_escapes_script_close_tag() {
         let ctx = SsrSharedContext::new();
         ctx.register_error(
-            SerializedDataId(0),
+            SerializedDataId::new(0),
             ErrorId::from(0_usize),
             Error::from(CustomError(
                 "boom</script><script>alert('pwned')</script><script>",
@@ -584,21 +602,21 @@ mod tests {
         assert!(default_ctx.get_is_hydrating());
 
         // hydrating IDs start at 0 and increment
-        assert_eq!(default_ctx.next_id(), SerializedDataId(0));
-        assert_eq!(default_ctx.next_id(), SerializedDataId(1));
+        assert_eq!(default_ctx.next_id(), SerializedDataId::new(0));
+        assert_eq!(default_ctx.next_id(), SerializedDataId::new(1));
 
         // non-hydrating IDs decrement from usize::MAX, NOT from 0
         default_ctx.set_is_hydrating(false);
         let first_non = default_ctx.next_id();
         let second_non = default_ctx.next_id();
-        assert_eq!(first_non, SerializedDataId(usize::MAX));
-        assert_eq!(second_non, SerializedDataId(usize::MAX - 1));
+        assert_eq!(first_non, SerializedDataId::new(usize::MAX));
+        assert_eq!(second_non, SerializedDataId::new(usize::MAX - 1));
 
         // and a hydrating id minted later must not collide with the
         // non-hydrating ones above
         default_ctx.set_is_hydrating(true);
         let next_hyd = default_ctx.next_id();
-        assert_eq!(next_hyd, SerializedDataId(2));
+        assert_eq!(next_hyd, SerializedDataId::new(2));
         assert_ne!(next_hyd, first_non);
         assert_ne!(next_hyd, second_non);
     }
@@ -617,10 +635,10 @@ mod tests {
         // (nested Suspense, child resources spawned inside a parent, etc.).
         let ctx_for_fut = Arc::clone(&ctx);
         ctx.write_async(
-            SerializedDataId(0),
+            SerializedDataId::new(0),
             Box::pin(async move {
                 ctx_for_fut.write_async(
-                    SerializedDataId(1),
+                    SerializedDataId::new(1),
                     Box::pin(async { String::from("\"child\"") }),
                 );
                 String::from("\"parent\"")
@@ -639,11 +657,11 @@ mod tests {
 
         let joined = chunks.join("");
         assert!(
-            joined.contains("__RESOLVED_RESOURCES[0]"),
+            joined.contains(r#"__RESOLVED_RESOURCES["0"]"#),
             "parent resource must resolve: {joined}"
         );
         assert!(
-            joined.contains("__RESOLVED_RESOURCES[1]"),
+            joined.contains(r#"__RESOLVED_RESOURCES["1"]"#),
             "child resource registered re-entrantly must also resolve: \
              {joined}"
         );
@@ -657,7 +675,7 @@ mod tests {
 
         // park one async resource so AsyncDataStream emits a follow-up chunk
         ctx.write_async(
-            SerializedDataId(1),
+            SerializedDataId::new(1),
             Box::pin(async { String::from("\"ok\"") }),
         );
 
@@ -668,7 +686,7 @@ mod tests {
         // register an error after pending_data() has been called so it is
         // serialized through the streaming path rather than the initial chunk
         ctx.register_error(
-            SerializedDataId(2),
+            SerializedDataId::new(2),
             ErrorId::from(7_usize),
             Error::from(CustomError("late</script><script>x</script>")),
         );
@@ -711,9 +729,9 @@ mod tests {
         // and calls `sc.set_incomplete_chunk(self.id)`.
         let ctx_for_fut = Arc::clone(&ctx);
         ctx.write_async(
-            SerializedDataId(1),
+            SerializedDataId::new(1),
             Box::pin(async move {
-                ctx_for_fut.set_incomplete_chunk(SerializedDataId(42));
+                ctx_for_fut.set_incomplete_chunk(SerializedDataId::new(42));
                 String::from("\"ok\"")
             }),
         );
@@ -737,8 +755,8 @@ mod tests {
         }
 
         assert!(
-            rest.contains("__INCOMPLETE_CHUNKS.push(42);"),
-            "expected a live __INCOMPLETE_CHUNKS.push(42) during streaming, \
+            rest.contains(r#"__INCOMPLETE_CHUNKS.push("42");"#),
+            "expected a live __INCOMPLETE_CHUNKS.push(\"42\") during streaming, \
              got: {rest}"
         );
         assert!(
@@ -759,20 +777,20 @@ mod tests {
     fn late_registered_resource_pushes_to_pending_resources() {
         let ctx = Arc::new(SsrSharedContext::new());
         ctx.write_async(
-            SerializedDataId(1),
+            SerializedDataId::new(1),
             Box::pin(async { String::from("\"a\"") }),
         );
 
         let mut stream = ctx.pending_data().expect("pending_data on ssr");
         let initial = block_on(stream.next()).expect("initial chunk");
         assert!(
-            initial.contains("__PENDING_RESOURCES=[1,];"),
+            initial.contains(r#"__PENDING_RESOURCES=["1",];"#),
             "initial chunk must list id 1 in __PENDING_RESOURCES: {initial}"
         );
 
         // late registration: this id (2) is not in the initial snapshot
         ctx.write_async(
-            SerializedDataId(2),
+            SerializedDataId::new(2),
             Box::pin(async { String::from("\"b\"") }),
         );
 
@@ -782,8 +800,8 @@ mod tests {
         }
 
         // id 2 must be pushed and resolved (in that order)
-        let push_2 = rest.find("__PENDING_RESOURCES.push(2);");
-        let resolve_2 = rest.find("__RESOLVED_RESOURCES[2]");
+        let push_2 = rest.find(r#"__PENDING_RESOURCES.push("2");"#);
+        let resolve_2 = rest.find(r#"__RESOLVED_RESOURCES["2"]"#);
         assert!(
             push_2.is_some() && resolve_2.is_some(),
             "late resource id 2 needs both push and resolve, got: {rest}"
@@ -808,9 +826,9 @@ mod tests {
 
         let ctx_for_fut = Arc::clone(&ctx);
         ctx.write_async(
-            SerializedDataId(7),
+            SerializedDataId::new(7),
             Box::pin(async move {
-                ctx_for_fut.set_incomplete_chunk(SerializedDataId(7));
+                ctx_for_fut.set_incomplete_chunk(SerializedDataId::new(7));
                 String::from("\"resolved\"")
             }),
         );
@@ -819,8 +837,8 @@ mod tests {
         let _initial = block_on(stream.next()).expect("initial chunk");
         let live = block_on(stream.next()).expect("live chunk");
 
-        let push_pos = live.find("__INCOMPLETE_CHUNKS.push(7);");
-        let resolve_pos = live.find("__RESOLVED_RESOURCES[7]");
+        let push_pos = live.find(r#"__INCOMPLETE_CHUNKS.push("7");"#);
+        let resolve_pos = live.find(r#"__RESOLVED_RESOURCES["7"]"#);
         assert!(
             push_pos.is_some() && resolve_pos.is_some(),
             "both push and resolve must appear in the live chunk: {live}"
@@ -858,12 +876,15 @@ mod tests {
             "",
         ] {
             let mut guarded = String::new();
-            ResolvedData(SerializedDataId(3), ser.to_string())
+            ResolvedData(SerializedDataId::new(3), ser.to_string())
                 .write_to_buf(&mut guarded);
 
             // byte-identical reference: the previous unconditional formulation
             let reference =
-                format!("{}: {:?}", 3usize, ser.replace('<', "\\u003c"));
+                format!(
+                    r#"__RESOLVED_RESOURCES["3"] = {:?};"#,
+                    ser.replace('<', "\\u003c")
+                );
 
             assert_eq!(
                 guarded, reference,
@@ -917,7 +938,7 @@ mod tests {
             armed.push(Arc::clone(&a));
             wakers.push(Arc::clone(&w));
             ctx.write_async(
-                SerializedDataId(i),
+                SerializedDataId::new(i),
                 Box::pin(Gate {
                     polls: Arc::clone(&polls),
                     armed: a,
@@ -950,7 +971,7 @@ mod tests {
             if let Some(w) = wakers[i].lock().or_poisoned().take() {
                 w.wake();
             }
-            let needle = format!("__RESOLVED_RESOURCES[{i}]");
+            let needle = format!(r#"__RESOLVED_RESOURCES["{i}"]"#);
             loop {
                 match stream.poll_next_unpin(&mut cx) {
                     Poll::Ready(Some(chunk)) => {
@@ -1021,7 +1042,7 @@ mod tests {
         let ctx = SsrSharedContext::new();
         for i in 0..N {
             ctx.write_async(
-                SerializedDataId(i),
+                SerializedDataId::new(i),
                 Box::pin(Probe {
                     in_flight: Arc::clone(&in_flight),
                     peak: Arc::clone(&peak),
@@ -1036,7 +1057,7 @@ mod tests {
         for (i, (id, _)) in data.iter().enumerate() {
             assert_eq!(
                 *id,
-                SerializedDataId(i),
+                SerializedDataId::new(i),
                 "consume_buffers must preserve registration order"
             );
         }

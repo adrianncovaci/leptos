@@ -615,7 +615,24 @@ where
                                 // stable owner also carries the context tree
                                 // (router, i18n, …) the rebuilt children read
                                 // at build time.
-                                owner.with(|| children.dry_resolve());
+                                //
+                                // The walk also runs UNTRACKED. This effect
+                                // deliberately subscribes only to `tasks`; a
+                                // tracked walk would additionally subscribe it
+                                // to every resource the re-run closures read,
+                                // and that subscription deadlocks: the next
+                                // effect run's `clear_sources` holds the
+                                // effect's lock while removing the effect from
+                                // the resource's subscriber list, while the
+                                // resource's driver holds the resource's lock
+                                // while registering a suspense task, whose
+                                // `tasks` notification wants the effect's
+                                // lock.
+                                owner.with(|| {
+                                    reactive_graph::graph::untrack(|| {
+                                        children.dry_resolve()
+                                    })
+                                });
                             }
 
                             if tasks

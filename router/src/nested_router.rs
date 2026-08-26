@@ -550,7 +550,12 @@ where
                     EitherOf3::C(top_level_outlet(&outlets, &outer_owner))
                 }
             }
-            .hydrate::<true>(cursor, position),
+            // stay on the async walk: the sync walk cannot pause, so a route
+            // subtree containing a pending Suspend (a lazy chunk, unresolved
+            // data) would hydrate a placeholder against real server content
+            // and drift the cursor
+            .hydrate_async(cursor, position)
+            .await,
         ));
 
         NestedRouteViewState {

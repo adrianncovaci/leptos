@@ -630,6 +630,77 @@ where
         })
     }
 
+    async fn hydrate_async(
+        self,
+        cursor: &Cursor,
+        position: &PositionState,
+    ) -> Self::State {
+        let cursor = cursor.to_owned();
+        let position = position.to_owned();
+
+        let mut children = Some(self.children);
+        let mut fallback = Some(self.fallback);
+        let none_pending = self.none_pending;
+        let outer_owner = Owner::new();
+
+        // The initial walk happens here, outside the effect closure, so that
+        // pending children — a lazy chunk, an unresolved Suspend — can be
+        // awaited and hydrated in place instead of being skipped by a
+        // synchronous first run. The effect starts from that state and only
+        // ever rebuilds. `new_with_async_value` runs this future under the
+        // effect's observer, so the `none_pending` read inside it still
+        // subscribes the effect.
+        let taken_children = children.take();
+        let taken_fallback = fallback.take();
+        let initial = {
+            let none_pending = none_pending.clone();
+            let outer_owner = outer_owner.clone();
+            async move {
+                // matches the sync path's first run: nth_run == 0, so the
+                // TRANSITION term is always true
+                let show_b = !none_pending.get();
+                OwnedView::new_with_owner(
+                    EitherKeepAlive {
+                        a: taken_children,
+                        b: taken_fallback,
+                        show_b,
+                    },
+                    outer_owner,
+                )
+                .hydrate_async(&cursor, &position)
+                .await
+            }
+        };
+
+        RenderEffect::new_with_async_value(
+            {
+                let mut nth_run = 1;
+                move |prev| {
+                    let show_b = !none_pending.get()
+                        && (!TRANSITION || nth_run < 1);
+                    nth_run += 1;
+                    let this = OwnedView::new_with_owner(
+                        EitherKeepAlive {
+                            a: children.take(),
+                            b: fallback.take(),
+                            show_b,
+                        },
+                        outer_owner.clone(),
+                    );
+
+                    if let Some(mut state) = prev {
+                        this.rebuild(&mut state);
+                        state
+                    } else {
+                        unreachable!()
+                    }
+                }
+            },
+            initial,
+        )
+        .await
+    }
+
     fn into_owned(self) -> Self::Owned {
         self
     }
@@ -737,6 +808,14 @@ where
         position: &PositionState,
     ) -> Self::State {
         (self.0)().hydrate::<FROM_SERVER>(cursor, position)
+    }
+
+    async fn hydrate_async(
+        self,
+        cursor: &Cursor,
+        position: &PositionState,
+    ) -> Self::State {
+        (self.0)().hydrate_async(cursor, position).await
     }
 
     fn into_owned(self) -> Self::Owned {

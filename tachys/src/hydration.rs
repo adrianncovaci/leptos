@@ -7,8 +7,31 @@ use std::cell::Cell;
 use std::{cell::RefCell, panic::Location, rc::Rc};
 use web_sys::{Comment, Element, Node, Text};
 
-#[cfg(feature = "mark_branches")]
 const COMMENT_NODE: u16 = 8;
+
+/// Skips comment nodes the server writes into the HTML for tooling rather
+/// than for hydration: hot-reload view markers (`<!--hot-reload|…|open-->`,
+/// written when `LEPTOS_WATCH` is set) and, with the `mark_branches` feature,
+/// branch markers (`<!--bo…-->`/`<!--bc…-->`). The walk never renders them,
+/// so leaving the cursor on one desyncs every node after it.
+fn skip_non_hydration_comments(inner: &mut crate::renderer::types::Node) {
+    while inner.node_type() == COMMENT_NODE {
+        if let Some(content) = inner.text_content() {
+            let skip = content.starts_with("hot-reload|")
+                || (cfg!(feature = "mark_branches")
+                    && (content.starts_with("bo")
+                        || content.starts_with("bc")));
+            if skip {
+                if let Some(sibling) = Rndr::next_sibling(inner) {
+                    *inner = sibling;
+                    continue;
+                }
+            }
+        }
+
+        break;
+    }
+}
 
 /// Hydration works by walking over the DOM, adding interactivity as needed.
 ///
@@ -51,21 +74,7 @@ where
             *inner = node;
         }
 
-        #[cfg(feature = "mark_branches")]
-        {
-            while inner.node_type() == COMMENT_NODE {
-                if let Some(content) = inner.text_content() {
-                    if content.starts_with("bo") || content.starts_with("bc") {
-                        if let Some(sibling) = Rndr::next_sibling(&inner) {
-                            *inner = sibling;
-                            continue;
-                        }
-                    }
-                }
-
-                break;
-            }
-        }
+        skip_non_hydration_comments(&mut inner);
         // //drop(inner);
         //crate::log(">> which is ");
         //Rndr::log_node(&self.current());
@@ -80,20 +89,7 @@ where
             *inner = node;
         }
 
-        #[cfg(feature = "mark_branches")]
-        {
-            while inner.node_type() == COMMENT_NODE {
-                if let Some(content) = inner.text_content() {
-                    if content.starts_with("bo") || content.starts_with("bc") {
-                        if let Some(sibling) = Rndr::next_sibling(&inner) {
-                            *inner = sibling;
-                            continue;
-                        }
-                    }
-                }
-                break;
-            }
-        }
+        skip_non_hydration_comments(&mut inner);
         //drop(inner);
         //crate::log(">> which is ");
         //Rndr::log_node(&self.current());

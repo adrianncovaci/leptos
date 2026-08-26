@@ -449,6 +449,47 @@ where
         SuspendState { inner }
     }
 
+    async fn hydrate_async(
+        self,
+        cursor: &Cursor,
+        position: &PositionState,
+    ) -> Self::State {
+        let Self { subscriber, inner } = self;
+
+        // create a Future that will be aborted on on_cleanup
+        // this prevents trying to access signals or other resources inside the Suspend, after the
+        // await, if they have already been cleaned up
+        let (abort_handle, abort_registration) = AbortHandle::new_pair();
+        let mut fut = Box::pin(Abortable::new(inner, abort_registration));
+        on_cleanup(move || abort_handle.abort());
+
+        // poll the future once immediately: serialized resource data and an
+        // already-loaded lazy chunk resolve right here
+        let value = match fut.as_mut().now_or_never().and_then(Result::ok) {
+            Some(value) => Some(value),
+            None => {
+                // register with the surrounding suspense while waiting, so a
+                // boundary above keeps treating this subtree as pending
+                let id =
+                    use_context::<SuspenseContext>().map(|sc| sc.task_id());
+                let value = fut.as_mut().await.ok();
+                drop(id);
+                value
+            }
+        };
+
+        // awaiting *in place*, rather than hydrating a placeholder and
+        // rebuilding later (as the sync path must), keeps the cursor aligned
+        // with the server-rendered DOM for this subtree, and keeps client-side
+        // resource creation in the server's creation order — which is what
+        // keeps serialized-data ids pointing at the right slots. `value` is
+        // `None` only when the owner was cleaned up mid-await.
+        let inner =
+            Rc::new(RefCell::new(value.hydrate_async(cursor, position).await));
+        subscriber.forward();
+        SuspendState { inner }
+    }
+
     async fn resolve(self) -> Self::AsyncOutput {
         Some(self.inner.await)
     }

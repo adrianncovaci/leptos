@@ -352,6 +352,7 @@ where
         let eff = reactive_graph::effect::Effect::new_isomorphic({
             let children = Arc::clone(&children);
             let notify_error_boundary = notify_error_boundary.clone();
+            let owner = owner.clone();
             // One-shot guard: the eager walk above + exactly one double-check
             // walk is enough to discover one level of conditionally-nested
             // resources. Re-walking on every empty-tasks observation re-runs
@@ -412,7 +413,20 @@ where
                             if let Some(children) =
                                 children.lock().or_poisoned().as_mut()
                             {
-                                children.dry_resolve();
+                                // Walk under the boundary's own owner, not the
+                                // effect's per-run owner. The walk re-invokes
+                                // child closures, and anything they create — in
+                                // particular a `Resource` — must not be
+                                // disposed by the next effect run's cleanup: a
+                                // resource disposed before it resolves leaks
+                                // its suspense task forever (the driver future
+                                // holds only weak refs and exits without ever
+                                // becoming ready), so the task set never
+                                // empties and the boundary never commits. The
+                                // stable owner also carries the context tree
+                                // (router, i18n, …) the rebuilt children read
+                                // at build time.
+                                owner.with(|| children.dry_resolve());
                             }
 
                             if tasks

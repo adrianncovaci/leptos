@@ -662,8 +662,27 @@ where
             }
         });
 
+        // The effect is spawned onto the executor and its first run is
+        // unconditional, so one still registered when this future is dropped —
+        // a HEAD request, a client that goes away mid-stream — runs its
+        // discovery walk after the request arena it reads is gone. Dispose it
+        // however the future ends, not only when the children resolve.
+        struct DisposeOnDrop<T: Dispose>(Option<T>);
+
+        impl<T: Dispose> Drop for DisposeOnDrop<T> {
+            fn drop(&mut self) {
+                if let Some(eff) = self.0.take() {
+                    eff.dispose();
+                }
+            }
+        }
+
+        let eff = DisposeOnDrop(Some(eff));
+
         let mut fut = Box::pin(ScopedFuture::new(ErrorHookFuture::new(
             async move {
+                let _dispose_eff = eff;
+
                 // race the local resource notifier against the set of tasks
                 //
                 // if there are local resources, we just return the fallback immediately
@@ -715,9 +734,6 @@ where
                                 None
                             }
                             children = children => {
-                                // clean up the (now useless) effect
-                                eff.dispose();
-
                                 Some(OwnedView::new_with_owner(children, owner))
                             }
                         }

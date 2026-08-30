@@ -206,6 +206,13 @@ impl Effect<LocalStorage> {
                         barrier.await;
                     }
                     while rx.next().await.is_some() {
+                        // A notification queued before this effect's node was
+                        // dropped still arrives here, and the first run below is
+                        // unconditional. Stop rather than run the body against an
+                        // arena that no longer holds what it reads.
+                        if !subscriber.is_alive() {
+                            break;
+                        }
                         if !owner.paused()
                             && (subscriber.with_observer(|| {
                                 subscriber.update_if_necessary()
@@ -362,6 +369,13 @@ impl Effect<LocalStorage> {
                         barrier.await;
                     }
                     while rx.next().await.is_some() {
+                        // A notification queued before this effect's node was
+                        // dropped still arrives here, and the first run below is
+                        // unconditional. Stop rather than run the body against an
+                        // arena that no longer holds what it reads.
+                        if !subscriber.is_alive() {
+                            break;
+                        }
                         if !owner.paused()
                             && (subscriber.with_observer(|| {
                                 subscriber.update_if_necessary()
@@ -450,6 +464,13 @@ impl Effect<SyncStorage> {
                     barrier.await;
                 }
                 while rx.next().await.is_some() {
+                    // A notification queued before this effect's node was
+                    // dropped still arrives here, and the first run below is
+                    // unconditional. Stop rather than run the body against an
+                    // arena that no longer holds what it reads.
+                    if !subscriber.is_alive() {
+                        break;
+                    }
                     if !owner.paused()
                         && (subscriber
                             .with_observer(|| subscriber.update_if_necessary())
@@ -508,6 +529,13 @@ impl Effect<SyncStorage> {
                         barrier.await;
                     }
                     while rx.next().await.is_some() {
+                        // A notification queued before this effect's node was
+                        // dropped still arrives here, and the first run below is
+                        // unconditional. Stop rather than run the body against an
+                        // arena that no longer holds what it reads.
+                        if !subscriber.is_alive() {
+                            break;
+                        }
                         if !owner.paused()
                             && (subscriber.with_observer(|| {
                                 subscriber.update_if_necessary()

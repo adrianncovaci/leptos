@@ -161,6 +161,18 @@ pub trait Subscriber: ReactiveNode {
 #[derive(Clone)]
 pub struct AnySubscriber(pub usize, pub Weak<dyn Subscriber + Send + Sync>);
 
+impl AnySubscriber {
+    /// Whether the node this points at still exists.
+    ///
+    /// A type-erased subscriber holds a weak reference, so this answers
+    /// `false` once the arena that held the node has been dropped. On the
+    /// server that arena belongs to the request, which can end while a
+    /// spawned effect is still queued to run.
+    pub fn is_alive(&self) -> bool {
+        self.1.upgrade().is_some()
+    }
+}
+
 impl ToAnySubscriber for AnySubscriber {
     fn to_any_subscriber(&self) -> AnySubscriber {
         self.clone()

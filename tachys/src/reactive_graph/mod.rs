@@ -9,7 +9,7 @@ use crate::{
     },
 };
 use reactive_graph::{
-    computed::suspense::SuspenseContext, effect::RenderEffect,
+    computed::suspense::SuspenseContext, effect::RenderEffect, log_warning,
     owner::use_context,
 };
 use std::{
@@ -566,13 +566,27 @@ where
     }
 }
 
+/// The number of times a reactive closure is re-run while resolving because
+/// its previous run registered new pending tasks with the surrounding
+/// [`SuspenseContext`].
+///
+/// Each retry waits for the tasks the previous run registered, so a closure
+/// that reads a resource gated behind another resource settles after one
+/// retry per level of nesting. A closure that *creates* a resource and reads
+/// it in the same run registers a fresh pending task on every run and can
+/// never settle; the cap turns that into a bounded number of runs, a warning,
+/// and the closure's last value, instead of a response that never completes.
+const MAX_SETTLE_RETRIES: usize = 8;
+
 /// Calls the function, and if that call registered tasks with the current
-/// [`SuspenseContext`] that are still pending, waits for them and calls it again.
+/// [`SuspenseContext`] that are still pending, waits for them and calls it
+/// again, up to [`MAX_SETTLE_RETRIES`] times.
 pub(crate) async fn invoke_settled<F>(fun: &mut F) -> F::Output
 where
     F: ReactiveFunction,
 {
     let suspense_context = use_context::<SuspenseContext>();
+    let mut retries = 0;
     loop {
         let registered =
             suspense_context.as_ref().map(SuspenseContext::registered);
@@ -582,6 +596,22 @@ where
                 if suspense_context.registered() > registered
                     && !suspense_context.is_empty() =>
             {
+                if retries == MAX_SETTLE_RETRIES {
+                    log_warning(format_args!(
+                        "A reactive closure inside <Suspense/> registered new \
+                         pending resources on {} consecutive runs, so the \
+                         boundary can never settle. This happens when a \
+                         Resource is created inside the closure (or in the \
+                         body of a component the closure constructs) and read \
+                         in the same run. Create resources outside the view, \
+                         let them depend on other resources, and only read \
+                         them inside <Suspense/>. Rendering the closure's \
+                         last value.",
+                        retries + 1
+                    ));
+                    return value;
+                }
+                retries += 1;
                 drop(value);
                 suspense_context.until_empty().await;
             }
